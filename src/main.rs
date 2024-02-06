@@ -11,6 +11,7 @@ use miette::{Context, IntoDiagnostic, Result};
 use pki_playground::{config, Entity, Extension, KeyPair};
 use spki::SubjectPublicKeyInfo;
 use std::collections::HashMap;
+use std::fmt::{self, Display};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -23,11 +24,16 @@ use x509_cert::{
     time::Validity,
     Certificate, TbsCertificate,
 };
+use zerocopy::AsBytes;
 
 #[derive(clap::Parser)]
 struct Options {
     #[arg(short, long, value_name = "FILE")]
     config: Option<PathBuf>,
+
+    /// encoding for key pairs
+    #[arg(long, default_value_t = Encoding::PEM)]
+    encoding: Encoding,
 
     #[command(subcommand)]
     action: Action,
@@ -46,6 +52,18 @@ enum Action {
     GenerateKeyPairs(GenerateKeyPairsOpts),
     GenerateCertificateRequests(GenerateCertificateRequestsOpts),
     GenerateCertificates(GenerateCertificatesOpts),
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+enum Encoding {
+    DER,
+    PEM,
+}
+
+impl Display for Encoding {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
 }
 
 #[derive(clap::Args)]
@@ -150,11 +168,21 @@ fn main() -> Result<()> {
                 let kp = <dyn KeyPair>::new(kp_config)?;
                 let kp_filename = format!("{}.key.pem", kp_config.name);
                 println!("Writing key pair to \"{}\"", &kp_filename);
-                write_to_file(
-                    &kp_filename,
-                    kp.to_pkcs8_pem()?.as_bytes(),
-                    action_opts.output_exists,
-                )?
+
+                match action_opts.encoding {
+                    Encoding::DER => write_to_file(
+                        &kp_filename,
+                        kp.to_pkcs8_der()?.as_bytes(),
+                        action_opts.output_exists,
+                    )?,
+                    Encoding::PEM => {
+                        write_to_file(
+                            &kp_filename,
+                            kp.to_pkcs8_pem()?.as_bytes(),
+                            action_opts.output_exists,
+                        )?;
+                    }
+                };
             }
         }
         Action::GenerateCertificateRequests(action_opts) => {

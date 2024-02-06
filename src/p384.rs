@@ -44,6 +44,14 @@ impl KeyPair for P384KeyPair {
         &self.name
     }
 
+    fn to_pkcs8_der(&self) -> Result<Zeroizing<Vec<u8>>> {
+        Ok(self
+            .private_key
+            .to_pkcs8_der()
+            .into_diagnostic()?
+            .to_bytes())
+    }
+
     fn to_pkcs8_pem(&self) -> Result<Zeroizing<String>> {
         self.private_key
             .to_pkcs8_pem(pkcs8::LineEnding::CRLF)

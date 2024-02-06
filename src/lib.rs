@@ -33,6 +33,8 @@ use ed25519::Ed25519KeyPair;
 pub trait KeyPair {
     fn name(&self) -> &str;
 
+    fn to_pkcs8_der(&self) -> Result<Zeroizing<Vec<u8>>>;
+
     fn to_pkcs8_pem(&self) -> Result<Zeroizing<String>>;
 
     fn to_spki(&self) -> Result<spki::Document>;
