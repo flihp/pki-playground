@@ -17,7 +17,7 @@ use x509_cert::{
         asn1::{OctetString, PrintableStringRef, SetOfVec, Utf8StringRef},
         Decode as _, Encode as _,
     },
-    ext::pkix::{certpolicy::PolicyInformation, name::{GeneralName, GeneralNames}, BasicConstraints, KeyUsage},
+    ext::pkix::{certpolicy::PolicyInformation, name::{GeneralName, GeneralNames}, constraints::name::{GeneralSubtree, GeneralSubtrees}, BasicConstraints, KeyUsage},
     name::{Name, RdnSequence, RelativeDistinguishedName},
     Certificate, TbsCertificate,
 };
@@ -186,6 +186,9 @@ impl dyn Extension {
             }
             config::X509Extensions::SubjectAltName(x) => {
                 Ok(Box::new(SubjectAltNameExtension::from_config(x)?))
+            }
+            config::X509Extensions::NameConstraints(x) => {
+                Ok(Box::new(NameConstraintsExtension::from_config(x)?))
             }
         }
     }
@@ -680,4 +683,88 @@ impl SubjectAltNameExtension {
     }
 }
 
+pub struct NameConstraintsExtension {
+    is_critical: bool,
+    der: Vec<u8>,
+}
 
+impl Extension for NameConstraintsExtension {
+    fn oid(&self) -> ObjectIdentifier {
+        x509_cert::ext::pkix::constraints::name::NameConstraints::OID
+    }
+
+    fn is_critical(&self) -> bool {
+        self.is_critical
+    }
+
+    fn as_der(&self) -> &[u8] {
+        &self.der
+    }
+}
+
+// Transform the ipnet::IpNet type to an OctetString as is required by RFC 5280
+// §4.2.1.10 paragraph 12. We use the ipnet::IpNet type here instead of
+// core::net::IpAddr because the Name Constraints Extension requires the octets
+// for both the address and the subnet mask.
+fn ipnet_to_octets(ipnet: ipnet::IpNet) -> Result<OctetString> {
+    let mut bytes = Vec::new();
+
+    match ipnet.addr() {
+        std::net::IpAddr::V4(ip) => bytes.extend(ip.octets()),
+        std::net::IpAddr::V6(ip) => bytes.extend(ip.octets()),
+    }
+
+    match ipnet.hostmask() {
+        std::net::IpAddr::V4(ip) => bytes.extend(ip.octets()),
+        std::net::IpAddr::V6(ip) => bytes.extend(ip.octets()),
+    }
+
+    x509_cert::der::asn1::OctetString::new(bytes).into_diagnostic()
+}
+
+// Transform an optional slice of config::GeneralName instances to an optional
+// collection of GeneralSubtree instances.
+fn names_to_subtrees(general_names: Option<&[config::GeneralName]>) -> Result<Option<GeneralSubtrees>> {
+    use std::str::FromStr;
+
+    Ok(match general_names {
+        Some(p) => {
+            let mut subtrees = GeneralSubtrees::new();
+            for name in p {
+                match name {
+                    config::GeneralName::IpAddr(s) => {
+                        let ipnet = ipnet::IpNet::from_str(s).into_diagnostic()?;
+                        let octets = ipnet_to_octets(ipnet)?;
+
+                        subtrees.push(GeneralSubtree {
+                            base: GeneralName::IpAddress(octets),
+                            minimum: 0,
+                            maximum: None,
+                        });
+                    }
+                }
+            }
+            Some(subtrees)
+        },
+        None => None,
+    })
+}
+
+impl NameConstraintsExtension {
+    pub fn from_config(config: &config::NameConstraintsExtension) -> Result<Self> {
+        let permitted_subtrees = names_to_subtrees(config.permitted.as_deref())?;
+        let excluded_subtrees = names_to_subtrees(config.excluded.as_deref())?;
+
+        let der = x509_cert::ext::pkix::constraints::name::NameConstraints {
+            permitted_subtrees,
+            excluded_subtrees,
+        }
+        .to_der()
+        .into_diagnostic()?;
+
+        Ok(NameConstraintsExtension {
+            is_critical: config.critical,
+            der,
+        })
+    }
+}
