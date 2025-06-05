@@ -191,6 +191,9 @@ certificate "TEST USE ONLY - Test Client A" {
         extended-key-usage critical=false {
             id-kp-client-auth
         }
+        subject-alt-name critical=false {
+            ip-addr "127.0.0.1"
+        }
     }
 
     serial-number "01"
