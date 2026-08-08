@@ -5,7 +5,7 @@
 use const_oid::{AssociatedOid, ObjectIdentifier};
 use der::Sequence;
 use digest::{typenum::Unsigned, Digest, OutputSizeUser};
-use flagset::FlagSet;
+use flagset::{flags, FlagSet};
 use ipnet::IpNet;
 use miette::{IntoDiagnostic, Result, WrapErr};
 use sha1::Sha1;
@@ -15,7 +15,7 @@ use x509_cert::{
     attr::AttributeTypeAndValue,
     der::{
         self,
-        asn1::{OctetString, PrintableStringRef, SetOfVec, Utf8StringRef},
+        asn1::{BitString, Int, OctetString, PrintableStringRef, SetOfVec, Utf8StringRef},
         Decode as _, Encode as _,
     },
     ext::pkix::{
@@ -583,6 +583,96 @@ impl Fwid {
     }
 }
 
+flags! {
+    // Operational Flags from DICE Attestation Architecture §6.1.1.1
+    //
+    // OperationalFlags ::= BIT STRING {
+    //     notConfigured (0),
+    //     notSecure (1),
+    //     recovery (2),
+    //     debug (3),
+    //     notReplayProtected (4),
+    //     notIntegrityProtected (5),
+    //     notRuntimeMeasured (6),
+    //     notImmutable (7),
+    //     notTcb (8),
+    //     fixedWidth (31)
+    // }
+    pub enum OperationalFlag: u32 {
+        NotConfigured = 1 << 0,
+        NotSecure = 1 << 1,
+        Recovery = 1 << 2,
+        Debug = 1 << 3,
+        NotReplayProtected = 1 << 4,
+        NotIntegrityProtected = 1 << 5,
+        NotRuntimeMeasured = 1 << 6,
+        NotImmutable = 1 << 7,
+        NotTcb = 1 << 8,
+        FixedWidth = 1 << 31,
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct OperationalFlags(pub FlagSet<OperationalFlag>);
+
+// the underlying `FlagSet` support in x509-cert does the heavy lifting
+impl der::EncodeValue for OperationalFlags {
+    fn encode_value(&self, encoder: &mut impl der::Writer) -> ::der::Result<()> {
+        self.0.encode_value(encoder)
+    }
+
+    fn value_len(&self) -> der::Result<der::Length> {
+        self.0.value_len()
+    }
+}
+
+impl OperationalFlags {
+    pub fn from_config(config: &config::OperationalFlags) -> Result<Self> {
+        let mut op_flags = FlagSet::default();
+        if config.not_configured {
+            op_flags |= OperationalFlag::NotConfigured
+        }
+
+        if config.not_secure {
+            op_flags |= OperationalFlag::NotSecure
+        }
+
+        if config.recovery {
+            op_flags |= OperationalFlag::Recovery
+        }
+
+        if config.debug {
+            op_flags |= OperationalFlag::Debug
+        }
+
+        if config.not_replay_protected {
+            op_flags |= OperationalFlag::NotReplayProtected
+        }
+
+        if config.not_integrity_protected {
+            op_flags |= OperationalFlag::NotIntegrityProtected
+        }
+
+        if config.not_runtime_measured {
+            op_flags |= OperationalFlag::NotRuntimeMeasured
+        }
+
+        if config.not_immutable {
+            op_flags |= OperationalFlag::NotImmutable
+        }
+
+        if config.not_tcb {
+            op_flags |= OperationalFlag::NotTcb
+        }
+
+        if config.fixed_width {
+            op_flags |= OperationalFlag::FixedWidth
+        }
+
+        Ok(OperationalFlags(op_flags))
+    }
+}
+
 // NOTE: All fields in this structure are optional and we only implement
 // support for the ones that we currently need. Additional fields should
 // be added as needed.
@@ -591,10 +681,32 @@ impl Fwid {
 // DiceTcbInfo ::== SEQUENCE {
 #[derive(Debug, Sequence)]
 pub struct DiceTcbInfo {
+    // vendor [0] IMPLICIT UTF8String OPTIONAL,
+    // NOTE: AMD certs use explicit tagging here despite the spec calling for IMPLICIT
+    #[asn1(context_specific = "0", tag_mode = "EXPLICIT", optional = "true")]
+    vendor: Option<String>,
+
+    #[asn1(context_specific = "1", tag_mode = "EXPLICIT", optional = "true")]
+    model: Option<String>,
+
+    #[asn1(context_specific = "4", tag_mode = "EXPLICIT", optional = "true")]
+    layer: Option<Int>,
+
+    #[asn1(context_specific = "5", tag_mode = "EXPLICIT", optional = "true")]
+    index: Option<Int>,
+
     // fwids [6] IMPLICIT FWIDLIST OPTIONAL,
     // where FWIDLIST ::== SEQUENCE SIZE (1..MAX) OF FWID
+    // TODO: this should produce a sequence of sequences, instead it produces
+    // a sequence for each FWID under the tag
     #[asn1(context_specific = "6", tag_mode = "IMPLICIT", optional = "true")]
     fwids: Option<Vec<Fwid>>,
+
+    #[asn1(context_specific = "7", tag_mode = "EXPLICIT", optional = "true")]
+    flags: Option<BitString>,
+
+    #[asn1(context_specific = "9", tag_mode = "EXPLICIT", optional = "true")]
+    r#type: Option<OctetString>,
 }
 
 #[derive(Debug)]
@@ -622,8 +734,26 @@ impl DiceTcbInfoExtension {
     const OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.23.133.5.4.1");
 
     pub fn from_config(config: &config::DiceTcbInfoExtension) -> Result<Self> {
-        let mut fwids: Vec<Fwid> = Vec::new();
+        // TODO: fewer (less?) `clone`s please
+        let vendor = config.vendor.clone();
 
+        let model = config.model.clone();
+
+        let layer = if let Some(l) = config.layer {
+            let bytes = l.to_be_bytes();
+            Some(Int::new(&bytes).into_diagnostic()?)
+        } else {
+            None
+        };
+
+        let index = if let Some(l) = config.index {
+            let bytes = l.to_be_bytes();
+            Some(Int::new(&bytes).into_diagnostic()?)
+        } else {
+            None
+        };
+
+        let mut fwids: Vec<Fwid> = Vec::new();
         for fwid in &config.fwid_list {
             let fwid = Fwid::from_config(fwid).wrap_err("Fwid from config")?;
 
@@ -632,8 +762,34 @@ impl DiceTcbInfoExtension {
 
         let fwids = if !fwids.is_empty() { Some(fwids) } else { None };
 
-        let tcb_info = DiceTcbInfo { fwids };
+        // flags
+        let flags = if let Some(flags) = &config.flags {
+            let flags = OperationalFlags::from_config(flags)?;
+            let flags = flags.0.bits().to_be_bytes();
+            Some(BitString::new(0, flags).into_diagnostic()?)
+        } else {
+            None
+        };
 
+        // type
+        let r#type = if let Some(r#type) = &config.r#type {
+            let digest = hex::decode(r#type)
+                .into_diagnostic()
+                .wrap_err("Decode 'type' octet string")?;
+            Some(OctetString::new(digest).into_diagnostic()?)
+        } else {
+            None
+        };
+
+        let tcb_info = DiceTcbInfo {
+            vendor,
+            model,
+            layer,
+            index,
+            fwids,
+            flags,
+            r#type,
+        };
         let der = tcb_info
             .to_der()
             .into_diagnostic()

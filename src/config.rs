@@ -279,8 +279,26 @@ pub struct DiceTcbInfoExtension {
     #[knus(property)]
     pub critical: bool,
 
+    #[knus(child, unwrap(argument))]
+    pub vendor: Option<String>,
+
+    #[knus(child, unwrap(argument))]
+    pub model: Option<String>,
+
+    #[knus(child, unwrap(argument))]
+    pub layer: Option<i8>,
+
+    #[knus(child, unwrap(argument))]
+    pub index: Option<i8>,
+
     #[knus(child, unwrap(children(name = "fwid")))]
     pub fwid_list: Vec<Fwid>,
+
+    #[knus(child)]
+    pub flags: Option<OperationalFlags>,
+
+    #[knus(child, unwrap(argument))]
+    pub r#type: Option<String>,
 }
 
 #[derive(knus::Decode, Debug, PartialEq, Eq)]
@@ -290,6 +308,39 @@ pub struct Fwid {
 
     #[knus(child, unwrap(argument))]
     pub digest: String,
+}
+
+#[derive(knus::Decode, Debug, PartialEq, Eq)]
+pub struct OperationalFlags {
+    #[knus(child)]
+    pub not_configured: bool,
+
+    #[knus(child)]
+    pub not_secure: bool,
+
+    #[knus(child)]
+    pub recovery: bool,
+
+    #[knus(child)]
+    pub debug: bool,
+
+    #[knus(child)]
+    pub not_replay_protected: bool,
+
+    #[knus(child)]
+    pub not_integrity_protected: bool,
+
+    #[knus(child)]
+    pub not_runtime_measured: bool,
+
+    #[knus(child)]
+    pub not_immutable: bool,
+
+    #[knus(child)]
+    pub not_tcb: bool,
+
+    #[knus(child)]
+    pub fixed_width: bool,
 }
 
 impl TryFrom<&CertificatePolicy> for PolicyInformation {
